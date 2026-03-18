@@ -13,6 +13,7 @@
   - transformacoes do painel original
   - mundo/conta/localizacao por chaves legadas
   - acoes com cascata de execucao e telemetria da ultima acao
+  - fallback de compatibilidade entre chaves `snake_case` e `camelCase`
 
 ## Estrategia
 1. Validar estabilidade do shell do modulo.

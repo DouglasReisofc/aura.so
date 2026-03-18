@@ -54,6 +54,26 @@ void SetLastActionStatus(const char* key, const char* message, bool success) {
     g_lastActionMessage = (message != nullptr && message[0] != '\0') ? message : "Sem detalhes";
 }
 
+const char* ResolveLegacyAliasKey(const char* key) {
+    if (key == nullptr) {
+        return nullptr;
+    }
+    if (std::strcmp(key, "super_launch") == 0) return "superLaunch";
+    if (std::strcmp(key, "fast_flap") == 0) return "fastFlap";
+    if (std::strcmp(key, "super_slidey") == 0) return "superSlidey";
+    if (std::strcmp(key, "join_random") == 0) return "joinRandom";
+    if (std::strcmp(key, "collect_gifts") == 0) return "collectGifts";
+    if (std::strcmp(key, "gift_light") == 0) return "giftAllLight";
+    if (std::strcmp(key, "teleport_menu") == 0) return "quickTeleportMenu";
+    if (std::strcmp(key, "account_quicksave") == 0) return "saveAccounts";
+    if (std::strcmp(key, "account_export") == 0) return "exportAccounts";
+    if (std::strcmp(key, "account_import") == 0) return "importAccounts";
+    if (std::strcmp(key, "translation_reload") == 0) return "translationReload";
+    if (std::strcmp(key, "translation_import") == 0) return "translationImport";
+    if (std::strcmp(key, "translation_list") == 0) return "translationList";
+    return nullptr;
+}
+
 const OracleFeatureSpec* FindFeatureByKey(const char* key) {
     if (key == nullptr || key[0] == '\0') {
         return nullptr;
@@ -91,7 +111,11 @@ bool IsFeatureAvailable(const AuraHostApi* hostApi, const OracleFeatureSpec& fea
     if (feature.optionIndex != kOptionNone && hostApi->isLegacyBoolOptionAvailable(feature.optionIndex)) {
         return true;
     }
-    return hostApi->isLegacyFeatureAvailable(feature.key);
+    if (hostApi->isLegacyFeatureAvailable(feature.key)) {
+        return true;
+    }
+    const char* alias = ResolveLegacyAliasKey(feature.key);
+    return alias != nullptr && hostApi->isLegacyFeatureAvailable(alias);
 }
 
 bool IsActionLikelyAvailable(const AuraHostApi* hostApi, const OracleActionSpec& action) {
@@ -132,6 +156,11 @@ bool LoadFeatureValue(const AuraHostApi* hostApi, const OracleFeatureSpec& featu
         *outValue = value;
         return true;
     }
+    const char* alias = ResolveLegacyAliasKey(feature.key);
+    if (alias != nullptr && hostApi->getLegacyBoolValue(alias, &value)) {
+        *outValue = value;
+        return true;
+    }
     if (hostApi->loadPersistedBool(feature.key, false, &value)) {
         *outValue = value;
         return true;
@@ -163,6 +192,13 @@ bool ApplyFeatureValue(const AuraHostApi* hostApi, const OracleFeatureSpec& feat
     bool accepted = hostApi->requestLegacyFeatureApply(feature.key, enabled);
     if (!accepted) {
         accepted = hostApi->setLegacyBoolValue(feature.key, enabled);
+    }
+    const char* alias = ResolveLegacyAliasKey(feature.key);
+    if (!accepted && alias != nullptr) {
+        accepted = hostApi->requestLegacyFeatureApply(alias, enabled);
+    }
+    if (!accepted && alias != nullptr) {
+        accepted = hostApi->setLegacyBoolValue(alias, enabled);
     }
     if (!accepted && feature.optionIndex != kOptionNone && hostApi->isLegacyBoolOptionAvailable(feature.optionIndex)) {
         accepted = hostApi->setLegacyBoolOption(feature.optionIndex, enabled);
@@ -198,6 +234,31 @@ bool ExecuteAction(const AuraHostApi* hostApi, const OracleActionSpec& action) {
         if (success) {
             hostApi->setLegacyBoolOption(feature->optionIndex, false);
             SetLastActionStatus(action.key, "Acao aplicada via pulso setLegacyBoolOption", true);
+            return true;
+        }
+    }
+
+    const char* alias = ResolveLegacyAliasKey(action.key);
+    if (!success && alias != nullptr) {
+        success = hostApi->invokeLegacyAction(alias);
+        if (success) {
+            SetLastActionStatus(action.key, "Acao aplicada por alias via invokeLegacyAction", true);
+            return true;
+        }
+    }
+    if (!success && alias != nullptr) {
+        success = hostApi->requestLegacyFeatureApply(alias, true);
+        if (success) {
+            hostApi->requestLegacyFeatureApply(alias, false);
+            SetLastActionStatus(action.key, "Acao aplicada por alias via requestLegacyFeatureApply", true);
+            return true;
+        }
+    }
+    if (!success && alias != nullptr) {
+        success = hostApi->setLegacyBoolValue(alias, true);
+        if (success) {
+            hostApi->setLegacyBoolValue(alias, false);
+            SetLastActionStatus(action.key, "Acao aplicada por alias via setLegacyBoolValue", true);
             return true;
         }
     }

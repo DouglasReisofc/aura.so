@@ -88,6 +88,9 @@ As acoes seguem trilha em cascata:
 3. pulso `setLegacyBoolValue`
 4. pulso `setLegacyBoolOption` quando houver `optionIndex`
 
+Compatibilidade adicional de chave:
+- fallback automatico entre `snake_case` e variantes legadas em `camelCase` para aumentar acerto com backend antigo.
+
 ## Overlay nativo (host API)
 - `frameRateLimit` via `setFrameRateLimited`
 - `gameSpeed` via `setGameSpeed`
