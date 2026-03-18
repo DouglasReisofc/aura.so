@@ -9,9 +9,11 @@ Repositorio dedicado ao nucleo nativo reconstruivel do painel Aura.
 
 ## Estrutura
 - `src/TSMRebuildMod.cpp`: implementacao principal do modulo.
+- `src/OracleParityCatalog.h`: catalogo de features/abas para paridade com oracle.
 - `include/AuraHostApi.h`: contrato ABI com o host (Canvas/Aura).
 - `CMakeLists.txt`: build standalone Android.
 - `scripts/make-release.ps1`: empacota artefato e manifesto.
+- `docs/ORACLE_PARITY_MATRIX.md`: status de migracao por feature.
 
 ## Build (Android NDK)
 Exemplo com CMake:

@@ -1,28 +1,19 @@
 #include "AuraHostApi.h"
+#include "OracleParityCatalog.h"
 
 #include <android/log.h>
 
 #include <array>
+#include <cstring>
 #include <string>
 
 namespace {
 constexpr const char* kLogTag = "TSMRebuild";
 const AuraHostApi* g_hostApi = nullptr;
-
-struct FeatureEntry {
-    const char* key;
-    const char* label;
-    const char* hint;
-};
-
-constexpr std::array<FeatureEntry, 6> kBaselineFeatures = {{
-    {"superRun", "Super corrida", "Ativa corrida acelerada"},
-    {"superFlight", "Super voo", "Ativa melhoria de voo"},
-    {"antiAFK", "Anti AFK", "Evita desconexao por inatividade"},
-    {"antiRainDrain", "Anti chuva", "Reduz perda de energia na chuva"},
-    {"antiKrill", "Anti krill", "Mitiga deteccao de krill"},
-    {"autoCharge", "Recarga automatica", "Recupera energia automaticamente"},
-}};
+ParityTab g_currentTab = ParityTab::Protecoes;
+bool g_showOnlyAvailable = false;
+bool g_showTelemetry = true;
+float g_gameSpeedMultiplier = 1.15f;
 
 const AuraHostApi* ResolveHostApi() {
     if (g_hostApi == nullptr || g_hostApi->abiVersion != AURA_HOST_API_VERSION) {
@@ -31,28 +22,266 @@ const AuraHostApi* ResolveHostApi() {
     return g_hostApi;
 }
 
-bool LoadFeatureValue(const AuraHostApi* hostApi, const char* key) {
-    bool currentValue = false;
-    hostApi->getLegacyBoolValue(key, &currentValue);
-    hostApi->loadPersistedBool(key, currentValue, &currentValue);
-    return currentValue;
-}
-
-void SaveFeatureValue(const AuraHostApi* hostApi, const char* key, bool value) {
-    hostApi->setLegacyBoolValue(key, value);
-    hostApi->savePersistedBool(key, value);
-    hostApi->requestLegacyFeatureApply(key, value);
-}
-
-void DrawFeatureRow(const AuraHostApi* hostApi, const FeatureEntry& feature) {
-    const bool available = hostApi->isLegacyFeatureAvailable(feature.key);
-    bool value = LoadFeatureValue(hostApi, feature.key);
-    const bool changed = hostApi->toggle(feature.label, &value, feature.hint);
-    if (changed && available) {
-        SaveFeatureValue(hostApi, feature.key, value);
+const char* TabLabel(ParityTab tab) {
+    switch (tab) {
+        case ParityTab::Protecoes:
+            return "Protecoes";
+        case ParityTab::Poderes:
+            return "Poderes";
+        case ParityTab::Mundo:
+            return "Mundo";
+        case ParityTab::Conta:
+            return "Conta";
+        case ParityTab::Overlay:
+            return "Overlay";
+        case ParityTab::Migracao:
+            return "Migracao";
     }
+    return "Desconhecido";
+}
+
+void TextDisabledLine(const AuraHostApi* hostApi, const char* left, const char* right) {
+    std::string line = std::string(left) + right;
+    hostApi->textDisabled(line.c_str());
+}
+
+bool IsSpecialOverlayFeature(const char* key) {
+    return key != nullptr
+        && (std::strcmp(key, "frameRateLimit") == 0
+            || std::strcmp(key, "gameSpeed") == 0
+            || std::strcmp(key, "showDebugTelemetry") == 0);
+}
+
+bool IsFeatureAvailable(const AuraHostApi* hostApi, const OracleFeatureSpec& feature) {
+    if (std::strcmp(feature.key, "frameRateLimit") == 0) {
+        return true;
+    }
+    if (std::strcmp(feature.key, "gameSpeed") == 0) {
+        return hostApi->isGameSpeedSupported();
+    }
+    if (std::strcmp(feature.key, "showDebugTelemetry") == 0) {
+        return true;
+    }
+    if (feature.optionIndex != kOptionNone && hostApi->isLegacyBoolOptionAvailable(feature.optionIndex)) {
+        return true;
+    }
+    return hostApi->isLegacyFeatureAvailable(feature.key);
+}
+
+bool LoadFeatureValue(const AuraHostApi* hostApi, const OracleFeatureSpec& feature, bool* outValue) {
+    if (outValue == nullptr) {
+        return false;
+    }
+
+    if (std::strcmp(feature.key, "frameRateLimit") == 0) {
+        *outValue = hostApi->isFrameRateLimited();
+        return true;
+    }
+    if (std::strcmp(feature.key, "gameSpeed") == 0) {
+        bool persisted = false;
+        hostApi->loadPersistedBool("gameSpeed", false, &persisted);
+        *outValue = persisted;
+        return true;
+    }
+    if (std::strcmp(feature.key, "showDebugTelemetry") == 0) {
+        bool persisted = true;
+        hostApi->loadPersistedBool("showDebugTelemetry", true, &persisted);
+        *outValue = persisted;
+        return true;
+    }
+
+    bool value = false;
+    if (hostApi->getLegacyBoolValue(feature.key, &value)) {
+        *outValue = value;
+        return true;
+    }
+    if (hostApi->loadPersistedBool(feature.key, false, &value)) {
+        *outValue = value;
+        return true;
+    }
+    *outValue = false;
+    return false;
+}
+
+bool ApplyFeatureValue(const AuraHostApi* hostApi, const OracleFeatureSpec& feature, bool enabled) {
+    if (std::strcmp(feature.key, "frameRateLimit") == 0) {
+        hostApi->setFrameRateLimited(enabled);
+        hostApi->savePersistedBool(feature.key, enabled);
+        return true;
+    }
+
+    if (std::strcmp(feature.key, "gameSpeed") == 0) {
+        const float speed = enabled ? g_gameSpeedMultiplier : 1.0f;
+        const bool ok = hostApi->setGameSpeed(speed);
+        hostApi->savePersistedBool(feature.key, enabled && ok);
+        return ok;
+    }
+
+    if (std::strcmp(feature.key, "showDebugTelemetry") == 0) {
+        g_showTelemetry = enabled;
+        hostApi->savePersistedBool(feature.key, enabled);
+        return true;
+    }
+
+    bool accepted = hostApi->requestLegacyFeatureApply(feature.key, enabled);
+    if (!accepted) {
+        accepted = hostApi->setLegacyBoolValue(feature.key, enabled);
+    }
+    if (!accepted && feature.optionIndex != kOptionNone && hostApi->isLegacyBoolOptionAvailable(feature.optionIndex)) {
+        accepted = hostApi->setLegacyBoolOption(feature.optionIndex, enabled);
+    }
+    hostApi->savePersistedBool(feature.key, enabled);
+    return accepted;
+}
+
+void DrawFeatureStateTelemetry(const AuraHostApi* hostApi, const OracleFeatureSpec& feature) {
+    if (!g_showTelemetry || !feature.telemetryPriority || IsSpecialOverlayFeature(feature.key)) {
+        return;
+    }
+    const char* runtime = hostApi->getLegacyFeatureRuntimeState(feature.key);
+    TextDisabledLine(hostApi, "Estado: ", runtime != nullptr ? runtime : "Unknown");
+    if (std::strcmp(feature.key, "superRun") == 0) {
+        TextDisabledLine(hostApi, "Ultimo evento: ", hostApi->getLastLegacyFeatureTimestamp("superRun"));
+        hostApi->textWrapped(hostApi->getLastLegacyFeatureError("superRun"));
+    }
+}
+
+void DrawFeatureRow(const AuraHostApi* hostApi, const OracleFeatureSpec& feature) {
+    const bool available = IsFeatureAvailable(hostApi, feature);
+    if (g_showOnlyAvailable && !available) {
+        return;
+    }
+
+    bool value = false;
+    LoadFeatureValue(hostApi, feature, &value);
+    std::string label = feature.label;
     if (!available) {
-        hostApi->textDisabled("indisponivel para esta build");
+        label += " [indisponivel]";
+    }
+
+    const bool changed = hostApi->toggle(label.c_str(), &value, feature.hint);
+    if (changed && available) {
+        const bool applied = ApplyFeatureValue(hostApi, feature, value);
+        if (!applied) {
+            __android_log_print(
+                ANDROID_LOG_WARN,
+                kLogTag,
+                "Aplicacao falhou para feature=%s value=%d",
+                feature.key,
+                value ? 1 : 0
+            );
+        }
+    }
+    DrawFeatureStateTelemetry(hostApi, feature);
+}
+
+template <std::size_t N>
+void DrawFeatureSection(const AuraHostApi* hostApi, const char* title, const std::array<OracleFeatureSpec, N>& features) {
+    hostApi->separator();
+    hostApi->textColored(0.14f, 0.82f, 0.43f, 1.0f, title);
+    for (const auto& feature : features) {
+        DrawFeatureRow(hostApi, feature);
+    }
+}
+
+void DrawTabControls(const AuraHostApi* hostApi) {
+    constexpr std::array<ParityTab, 6> tabs = {{
+        ParityTab::Protecoes,
+        ParityTab::Poderes,
+        ParityTab::Mundo,
+        ParityTab::Conta,
+        ParityTab::Overlay,
+        ParityTab::Migracao,
+    }};
+
+    for (std::size_t i = 0; i < tabs.size(); ++i) {
+        const ParityTab tab = tabs[i];
+        std::string buttonLabel;
+        if (g_currentTab == tab) {
+            buttonLabel = std::string("> ") + TabLabel(tab);
+        } else {
+            buttonLabel = TabLabel(tab);
+        }
+        if (hostApi->button(buttonLabel.c_str())) {
+            g_currentTab = tab;
+        }
+        if (i + 1 < tabs.size()) {
+            hostApi->sameLine();
+        }
+    }
+}
+
+void DrawMigrationPanel(const AuraHostApi* hostApi) {
+    TextDisabledLine(hostApi, "Backend: ", hostApi->getLegacyBackendStatusLabel());
+    TextDisabledLine(hostApi, "Perfil de compatibilidade: ", hostApi->getLegacyCompatibilityProfile());
+    TextDisabledLine(hostApi, "Sky build key: ", hostApi->getSkyBuildKey());
+
+    bool localShowOnlyAvailable = g_showOnlyAvailable;
+    if (hostApi->toggle("Mostrar apenas disponiveis", &localShowOnlyAvailable, "Oculta funcoes sem backend mapeado")) {
+        g_showOnlyAvailable = localShowOnlyAvailable;
+        hostApi->savePersistedBool("showOnlyAvailable", g_showOnlyAvailable);
+    }
+
+    bool localTelemetry = g_showTelemetry;
+    if (hostApi->toggle("Mostrar telemetria", &localTelemetry, "Mostra estado e ultimo erro do backend")) {
+        g_showTelemetry = localTelemetry;
+        hostApi->savePersistedBool("showDebugTelemetry", g_showTelemetry);
+    }
+
+    if (hostApi->button("Sincronizar estado do oracle")) {
+        const bool reloaded = hostApi->reloadLegacyState();
+        __android_log_print(ANDROID_LOG_INFO, kLogTag, "reloadLegacyState=%d", reloaded ? 1 : 0);
+    }
+    hostApi->sameLine();
+    if (hostApi->button("Aplicar fila pendente")) {
+        hostApi->pumpLegacyFeatureRequests();
+    }
+
+    if (hostApi->button("Resetar baseline de migracao")) {
+        ForEachFeature([&](const OracleFeatureSpec& feature, ParityTab tab) {
+            if (tab == ParityTab::Migracao) {
+                return;
+            }
+            if (IsSpecialOverlayFeature(feature.key)) {
+                return;
+            }
+            ApplyFeatureValue(hostApi, feature, false);
+        });
+        hostApi->setFrameRateLimited(false);
+        hostApi->setGameSpeed(1.0f);
+        hostApi->savePersistedBool("gameSpeed", false);
+    }
+}
+
+void DrawCurrentTab(const AuraHostApi* hostApi) {
+    switch (g_currentTab) {
+        case ParityTab::Protecoes:
+            DrawFeatureSection(hostApi, "Protecoes", kProtectionFeatures);
+            break;
+        case ParityTab::Poderes:
+            DrawFeatureSection(hostApi, "Poderes", kPowerFeatures);
+            break;
+        case ParityTab::Mundo:
+            DrawFeatureSection(hostApi, "Mundo", kWorldFeatures);
+            break;
+        case ParityTab::Conta:
+            DrawFeatureSection(hostApi, "Conta", kAccountFeatures);
+            break;
+        case ParityTab::Overlay:
+            DrawFeatureSection(hostApi, "Overlay", kOverlayFeatures);
+            hostApi->separator();
+            hostApi->textDisabled("Ajuste manual de velocidade (aplica quando gameSpeed estiver ON)");
+            if (hostApi->sliderFloat("##game_speed_slider", &g_gameSpeedMultiplier, 0.5f, 3.0f, "%.2fx")) {
+                bool gameSpeedEnabled = false;
+                hostApi->loadPersistedBool("gameSpeed", false, &gameSpeedEnabled);
+                if (gameSpeedEnabled) {
+                    hostApi->setGameSpeed(g_gameSpeedMultiplier);
+                }
+            }
+            break;
+        case ParityTab::Migracao:
+            DrawMigrationPanel(hostApi);
+            break;
     }
 }
 
@@ -67,9 +296,12 @@ void Draw(bool* open) {
         return;
     }
 
+    hostApi->loadPersistedBool("showDebugTelemetry", true, &g_showTelemetry);
+    hostApi->loadPersistedBool("showOnlyAvailable", false, &g_showOnlyAvailable);
+
     hostApi->pumpLegacyFeatureRequests();
     hostApi->setNextWindowDefaultPos(28.0f, 24.0f);
-    hostApi->setNextWindowDefaultSize(520.0f, 640.0f);
+    hostApi->setNextWindowDefaultSize(760.0f, 680.0f);
 
     if (!hostApi->beginPanelWindow("##tsm_rebuild_core_window", open)) {
         hostApi->endWindow();
@@ -77,25 +309,10 @@ void Draw(bool* open) {
     }
 
     hostApi->setWindowFontScale(1.12f);
-    hostApi->textColored(0.12f, 0.88f, 0.44f, 1.0f, "Nucleo TSM Rebuild");
+    hostApi->textColored(0.12f, 0.88f, 0.44f, 1.0f, "PAINEL AURA - CORE REBUILD");
     hostApi->separator();
-    hostApi->textDisabled((std::string("Backend: ") + hostApi->getLegacyBackendStatusLabel()).c_str());
-    hostApi->textDisabled((std::string("Perfil: ") + hostApi->getLegacyCompatibilityProfile()).c_str());
-    hostApi->spacing();
-
-    for (const auto& feature : kBaselineFeatures) {
-        DrawFeatureRow(hostApi, feature);
-        hostApi->spacing();
-    }
-
-    hostApi->separator();
-    if (hostApi->button("Sincronizar estado do oracle")) {
-        hostApi->reloadLegacyState();
-    }
-    hostApi->sameLine();
-    if (hostApi->button("Aplicar fila pendente")) {
-        hostApi->pumpLegacyFeatureRequests();
-    }
+    DrawTabControls(hostApi);
+    DrawCurrentTab(hostApi);
 
     hostApi->endWindow();
 }
@@ -117,8 +334,8 @@ extern "C" __attribute__((visibility("default"))) void InitLate() {
 }
 
 extern "C" __attribute__((used, section(".config"), aligned(1))) const char kTSMRebuildConfig[] =
-    "{\"name\":\"libTSMRebuild.so\",\"displayName\":\"Nucleo TSM Rebuild\",\"author\":\"AuraFlow\","
-    "\"description\":\"Base reconstruivel do TSM com source completo para manutencao e updates.\","
-    "\"majorVersion\":0,\"minorVersion\":0,\"patchVersion\":1,"
+    "{\"name\":\"libTSMRebuild.so\",\"displayName\":\"That Sky Mod\",\"author\":\"AuraFlow\","
+    "\"description\":\"Migracao do nucleo TSM com foco em paridade do oracle original.\","
+    "\"majorVersion\":0,\"minorVersion\":2,\"patchVersion\":0,"
     "\"dependencies\":[],\"displaysUI\":true,\"selfManagedUI\":true,"
     "\"githubReleasesUrl\":\"https://api.github.com/repos/DouglasReisofc/aura.so/releases/latest\"}";
