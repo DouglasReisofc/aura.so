@@ -14,6 +14,9 @@ ParityTab g_currentTab = ParityTab::Protecoes;
 bool g_showOnlyAvailable = false;
 bool g_showTelemetry = true;
 float g_gameSpeedMultiplier = 1.15f;
+bool g_lastActionSuccess = false;
+std::string g_lastActionKey = "nenhuma";
+std::string g_lastActionMessage = "Sem acao executada nesta sessao";
 
 const AuraHostApi* ResolveHostApi() {
     if (g_hostApi == nullptr || g_hostApi->abiVersion != AURA_HOST_API_VERSION) {
@@ -45,6 +48,29 @@ void TextDisabledLine(const AuraHostApi* hostApi, const char* left, const char* 
     hostApi->textDisabled(line.c_str());
 }
 
+void SetLastActionStatus(const char* key, const char* message, bool success) {
+    g_lastActionSuccess = success;
+    g_lastActionKey = (key != nullptr && key[0] != '\0') ? key : "desconhecida";
+    g_lastActionMessage = (message != nullptr && message[0] != '\0') ? message : "Sem detalhes";
+}
+
+const OracleFeatureSpec* FindFeatureByKey(const char* key) {
+    if (key == nullptr || key[0] == '\0') {
+        return nullptr;
+    }
+
+    const OracleFeatureSpec* found = nullptr;
+    ForEachFeature([&](const OracleFeatureSpec& feature, ParityTab) {
+        if (found != nullptr) {
+            return;
+        }
+        if (std::strcmp(feature.key, key) == 0) {
+            found = &feature;
+        }
+    });
+    return found;
+}
+
 bool IsSpecialOverlayFeature(const char* key) {
     return key != nullptr
         && (std::strcmp(key, "frameRateLimit") == 0
@@ -66,6 +92,17 @@ bool IsFeatureAvailable(const AuraHostApi* hostApi, const OracleFeatureSpec& fea
         return true;
     }
     return hostApi->isLegacyFeatureAvailable(feature.key);
+}
+
+bool IsActionLikelyAvailable(const AuraHostApi* hostApi, const OracleActionSpec& action) {
+    if (hostApi->isLegacyFeatureAvailable(action.key)) {
+        return true;
+    }
+    const OracleFeatureSpec* feature = FindFeatureByKey(action.key);
+    if (feature != nullptr) {
+        return IsFeatureAvailable(hostApi, *feature);
+    }
+    return false;
 }
 
 bool LoadFeatureValue(const AuraHostApi* hostApi, const OracleFeatureSpec& feature, bool* outValue) {
@@ -134,6 +171,41 @@ bool ApplyFeatureValue(const AuraHostApi* hostApi, const OracleFeatureSpec& feat
     return accepted;
 }
 
+bool ExecuteAction(const AuraHostApi* hostApi, const OracleActionSpec& action) {
+    bool success = hostApi->invokeLegacyAction(action.key);
+    if (success) {
+        SetLastActionStatus(action.key, "Acao aplicada via invokeLegacyAction", true);
+        return true;
+    }
+
+    success = hostApi->requestLegacyFeatureApply(action.key, true);
+    if (success) {
+        hostApi->requestLegacyFeatureApply(action.key, false);
+        SetLastActionStatus(action.key, "Acao aplicada via pulso requestLegacyFeatureApply", true);
+        return true;
+    }
+
+    success = hostApi->setLegacyBoolValue(action.key, true);
+    if (success) {
+        hostApi->setLegacyBoolValue(action.key, false);
+        SetLastActionStatus(action.key, "Acao aplicada via pulso setLegacyBoolValue", true);
+        return true;
+    }
+
+    const OracleFeatureSpec* feature = FindFeatureByKey(action.key);
+    if (feature != nullptr && feature->optionIndex != kOptionNone) {
+        success = hostApi->setLegacyBoolOption(feature->optionIndex, true);
+        if (success) {
+            hostApi->setLegacyBoolOption(feature->optionIndex, false);
+            SetLastActionStatus(action.key, "Acao aplicada via pulso setLegacyBoolOption", true);
+            return true;
+        }
+    }
+
+    SetLastActionStatus(action.key, "Acao indisponivel para o backend atual", false);
+    return false;
+}
+
 void DrawFeatureStateTelemetry(const AuraHostApi* hostApi, const OracleFeatureSpec& feature) {
     if (!g_showTelemetry || !feature.telemetryPriority || IsSpecialOverlayFeature(feature.key)) {
         return;
@@ -181,6 +253,34 @@ void DrawFeatureSection(const AuraHostApi* hostApi, const char* title, const std
     hostApi->textColored(0.14f, 0.82f, 0.43f, 1.0f, title);
     for (const auto& feature : features) {
         DrawFeatureRow(hostApi, feature);
+    }
+}
+
+template <std::size_t N>
+void DrawActionSection(const AuraHostApi* hostApi, const char* title, const std::array<OracleActionSpec, N>& actions) {
+    hostApi->separator();
+    hostApi->textColored(0.86f, 0.76f, 0.18f, 1.0f, title);
+    for (const auto& action : actions) {
+        const bool likelyAvailable = IsActionLikelyAvailable(hostApi, action);
+        if (g_showOnlyAvailable && !likelyAvailable) {
+            continue;
+        }
+
+        std::string actionLabel = action.label;
+        if (!likelyAvailable) {
+            actionLabel += " [indisponivel]";
+        }
+        if (hostApi->button(actionLabel.c_str())) {
+            const bool ok = ExecuteAction(hostApi, action);
+            __android_log_print(
+                ok ? ANDROID_LOG_INFO : ANDROID_LOG_WARN,
+                kLogTag,
+                "Action %s result=%d",
+                action.key,
+                ok ? 1 : 0
+            );
+        }
+        hostApi->textDisabled(action.hint);
     }
 }
 
@@ -251,6 +351,17 @@ void DrawMigrationPanel(const AuraHostApi* hostApi) {
         hostApi->setGameSpeed(1.0f);
         hostApi->savePersistedBool("gameSpeed", false);
     }
+
+    hostApi->separator();
+    hostApi->textColored(
+        g_lastActionSuccess ? 0.22f : 0.88f,
+        g_lastActionSuccess ? 0.84f : 0.26f,
+        g_lastActionSuccess ? 0.34f : 0.26f,
+        1.0f,
+        g_lastActionSuccess ? "Ultima acao: sucesso" : "Ultima acao: falha"
+    );
+    TextDisabledLine(hostApi, "Chave: ", g_lastActionKey.c_str());
+    hostApi->textWrapped(g_lastActionMessage.c_str());
 }
 
 void DrawCurrentTab(const AuraHostApi* hostApi) {
@@ -260,12 +371,15 @@ void DrawCurrentTab(const AuraHostApi* hostApi) {
             break;
         case ParityTab::Poderes:
             DrawFeatureSection(hostApi, "Poderes", kPowerFeatures);
+            DrawFeatureSection(hostApi, "Transformacoes", kTransformationFeatures);
             break;
         case ParityTab::Mundo:
             DrawFeatureSection(hostApi, "Mundo", kWorldFeatures);
+            DrawActionSection(hostApi, "Acoes rapidas (Mundo)", kWorldActions);
             break;
         case ParityTab::Conta:
             DrawFeatureSection(hostApi, "Conta", kAccountFeatures);
+            DrawActionSection(hostApi, "Acoes de conta", kAccountActions);
             break;
         case ParityTab::Overlay:
             DrawFeatureSection(hostApi, "Overlay", kOverlayFeatures);
@@ -280,6 +394,8 @@ void DrawCurrentTab(const AuraHostApi* hostApi) {
             }
             break;
         case ParityTab::Migracao:
+            DrawFeatureSection(hostApi, "Idioma / Traducoes", kLocalizationFeatures);
+            DrawActionSection(hostApi, "Acoes de migracao", kMigrationActions);
             DrawMigrationPanel(hostApi);
             break;
     }
@@ -336,6 +452,6 @@ extern "C" __attribute__((visibility("default"))) void InitLate() {
 extern "C" __attribute__((used, section(".config"), aligned(1))) const char kTSMRebuildConfig[] =
     "{\"name\":\"libTSMRebuild.so\",\"displayName\":\"That Sky Mod\",\"author\":\"AuraFlow\","
     "\"description\":\"Migracao do nucleo TSM com foco em paridade do oracle original.\","
-    "\"majorVersion\":0,\"minorVersion\":2,\"patchVersion\":0,"
+    "\"majorVersion\":0,\"minorVersion\":3,\"patchVersion\":0,"
     "\"dependencies\":[],\"displaysUI\":true,\"selfManagedUI\":true,"
     "\"githubReleasesUrl\":\"https://api.github.com/repos/DouglasReisofc/aura.so/releases/latest\"}";
