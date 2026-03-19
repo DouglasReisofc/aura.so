@@ -1,0 +1,10 @@
+{
+  "tag": "0.3.0",
+  "owner": "DouglasReisofc",
+  "repo": "aura.so",
+  "githubReleasesUrl": "https://api.github.com/repos/DouglasReisofc/aura.so/releases/latest",
+  "asset": {
+    "name": "libTSMRebuild.so",
+    "sha256": "1b2e86e9a359d88634ca6f3069bd9ecaff3715f827ba74eeabc860819a457f04"
+  }
+}

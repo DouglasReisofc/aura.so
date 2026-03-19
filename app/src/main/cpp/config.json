@@ -1,0 +1,13 @@
+{
+  "name": "libaura.so",
+  "description": "Aura.so base project for Canvas ModLoader",
+  "author": "Maksim Belov (artDev)",
+  "majorVersion":1,
+  "minorVersion":4,
+  "patchVersion":1,
+  "displayName":"Aura.so",
+  "displaysUI":true,
+  "dependencies": [
+
+  ]
+}

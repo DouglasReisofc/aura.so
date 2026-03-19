@@ -1,0 +1,62 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    compileSdk 32
+
+    defaultConfig {
+        multiDexEnabled false
+        applicationId "com.cipher.userlib"
+        minSdk 26
+        //noinspection EditedTargetSdkVersion
+        targetSdk 33
+        versionCode 1
+        versionName "1.0"
+
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        externalNativeBuild {
+            cmake {
+                cppFlags '-std=c++17'
+                abiFilters "arm64-v8a"
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+    externalNativeBuild {
+        cmake {
+            path file('src/main/cpp/CMakeLists.txt')
+            version '3.22.1'
+        }
+    }
+    ndkVersion '25.1.8937393'
+    namespace 'com.cipher.userlib'
+}
+dependencies {
+    implementation files("libs/newjson.jar")
+}
+
+def embeddedDex = file("src/main/cpp/classes.dex")
+
+tasks.register("syncEmbeddedDexDebug", Copy) {
+    dependsOn("mergeDexDebug")
+    from(layout.buildDirectory.file("intermediates/dex/debug/mergeDexDebug/classes.dex"))
+    into(embeddedDex.parentFile)
+    rename { "classes.dex" }
+}
+
+tasks.configureEach { t ->
+    if (t.name.startsWith("configureCMakeDebug") || t.name.startsWith("buildCMakeDebug")) {
+        t.dependsOn("syncEmbeddedDexDebug")
+    }
+}
