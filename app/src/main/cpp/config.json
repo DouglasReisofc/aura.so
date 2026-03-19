@@ -1,11 +1,12 @@
 {
   "name": "libaura.so",
-  "description": "Aura.so base project for Canvas ModLoader",
-  "author": "Maksim Belov (artDev)",
+  "description": "Aura.so for Canvas ModLoader",
+  "author": "DouglasReisofc",
   "majorVersion":1,
   "minorVersion":4,
-  "patchVersion":1,
+  "patchVersion":2,
   "displayName":"Aura.so",
+  "githubReleasesUrl": "https://api.github.com/repos/DouglasReisofc/aura.so/releases/latest",
   "displaysUI":true,
   "dependencies": [
 
