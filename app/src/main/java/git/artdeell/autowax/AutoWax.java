@@ -31,6 +31,7 @@ import javax.net.ssl.HttpsURLConnection;
 public class AutoWax {
     private static String API_HOST = "live.radiance.thatgamecompany.com";
     private static String userAgent;
+    private static String fallbackUserAgent;
 
     public final Object sessionLock = new Object();
     String userid = null;
@@ -40,7 +41,12 @@ public class AutoWax {
 
     public static void initWithParameters(int version, boolean isBeta) {
         API_HOST = isBeta ? "beta.radiance.thatgamecompany.com" : "live.radiance.thatgamecompany.com";
-        userAgent = isBeta ? "Sky-Test-com.tgc.sky.android.test./0.15.1." + version + " (unknown; android 30.0.0; en)" : "Sky-Live-com.tgc.sky.android/0.15.1." + version + " (unknown; android 30.0.0; en)";
+        // Primary UA aligned with current TSM session pipeline.
+        userAgent = "ThatSkyMod/Android";
+        // Fallback UA derived from current Sky channel/build.
+        fallbackUserAgent = isBeta
+                ? "Sky-Test-com.tgc.sky.android.test/0.32.6." + version + " (unknown; android 33.0.0; en)"
+                : "Sky-Live-com.tgc.sky.android/0.32.6." + version + " (unknown; android 33.0.0; en)";
         AutoWax.version = version;
     }
 
@@ -86,13 +92,13 @@ public class AutoWax {
         return ret;
     }
 
-    private static JSONObject _doPost(String sid, String uid, String path, String postData) throws SkyProtocolException {
+    private static JSONObject _doPost(String sid, String uid, String path, String postData, String requestUserAgent) throws SkyProtocolException {
         try {
             HttpsURLConnection conn = (HttpsURLConnection) new URL("https://" + API_HOST + path).openConnection();
             conn.setRequestMethod("POST");
             conn.setConnectTimeout(8000);
             conn.setReadTimeout(12000);
-            conn.setRequestProperty("User-Agent", userAgent);
+            conn.setRequestProperty("User-Agent", requestUserAgent);
             conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
             conn.setRequestProperty("Content-Length", postData.getBytes(StandardCharsets.UTF_8).length + "");
             conn.setRequestProperty("Host", API_HOST);
@@ -107,7 +113,7 @@ public class AutoWax {
             }
             int code = conn.getResponseCode();
             if (code == 401) {
-                throw new LostSessionException(path);
+                throw new LostSessionException(path + "|ua=" + requestUserAgent);
             }
             Log.i("ErrorCode", path + " -> " + code);
             try (InputStream rd = code >= 400 ? conn.getErrorStream() : conn.getInputStream()) {
@@ -137,33 +143,47 @@ public class AutoWax {
         while (doesRequireRerequest && attempts < 4) {
             if (isCancelRequested()) throw new SkyProtocolException("Cancelled by user");
             attempts++;
+            CanvasMain.reauthorized();
             String beforeUser = userid;
             String beforeSession = session;
+            if (!hasSession()) {
+                throw new SkyProtocolException("Session unavailable before request");
+            }
             try {
                 doesRequireRerequest = false;
-                resp = _doPost(session, userid, path, postData.toString());
+                resp = _doPost(session, userid, path, postData.toString(), userAgent);
                 if (resp.has("result") && resp.get("result").equals("timeout")) {
                     System.out.println("TGCDB timed out");
                     doesRequireRerequest = true;
                 }
             } catch (LostSessionException e) {
+                // Retry once with fallback UA before declaring session invalid.
+                if (fallbackUserAgent != null && !fallbackUserAgent.equals(userAgent)) {
+                    try {
+                        resp = _doPost(session, userid, path, postData.toString(), fallbackUserAgent);
+                        userAgent = fallbackUserAgent;
+                        CanvasMain.submitLogString("User-Agent ajustado para compatibilidade: " + userAgent);
+                        doesRequireRerequest = false;
+                        continue;
+                    } catch (LostSessionException ignored) {
+                        // Continue to session refresh flow below.
+                    }
+                }
                 doesRequireRerequest = true;
                 String failedPath = e.getMessage() == null ? "unknown" : e.getMessage();
                 CanvasMain.submitLogString("API rejeitou sessão (401) em: " + failedPath);
                 System.out.println("We lost session!");
                 try {
-                    // Try silent refresh first to avoid false "session terminated" prompts.
+                    // Real-time refresh before prompting user.
                     CanvasMain.reauthorized();
-                    boolean changedAfterSilentRefresh = !Objects.equals(beforeUser, userid) || !Objects.equals(beforeSession, session);
-                    if(!hasSession() || !changedAfterSilentRefresh) {
+                    if(!hasSession()) {
                         CanvasMain.goReauthorize();
                         System.out.println("Reauthorization fired!");
                         synchronized (sessionLock) {
                             sessionLock.wait(2000);
                         }
                     }
-                    boolean changedAfterPrompt = !Objects.equals(beforeUser, userid) || !Objects.equals(beforeSession, session);
-                    if(!hasSession() || !changedAfterPrompt) {
+                    if(!hasSession()) {
                         clearSession();
                         CanvasMain.submitLogString("Sessão indisponível no momento. Tente novamente em instantes.");
                         doesRequireRerequest = false;
