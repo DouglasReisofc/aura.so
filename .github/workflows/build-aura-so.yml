@@ -42,7 +42,9 @@ jobs:
           PY
 
       - name: Build Debug
-        run: ./gradlew assembleDebug
+        run: |
+          chmod +x ./gradlew
+          ./gradlew assembleDebug
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
