@@ -1,9 +1,0 @@
-build/
-out/
-dist/
-.idea/
-.vscode/
-*.user
-*.suo
-*.apk
-*.so
